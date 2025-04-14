@@ -1,0 +1,17 @@
+defaults:
+  - model: policy_train
+  - search_spaces@hydra.sweeper.params: ${model}
+  - _self_
+  - override hydra/job_logging: custom
+  - override hydra/sweeper: optuna
+  - override hydra/sweeper/sampler: tpe
+
+hydra:
+  sweeper:
+    sampler:
+      seed: 42
+    direction: maximize
+    study_name: ASTSynthesizer
+    storage: null
+    n_trials: 10
+    n_jobs: 2

@@ -13,18 +13,20 @@ class PriceProcessor:
         df: pd.DataFrame,
         input_cols: List[str],
         reward_cols: List[str],
-        date_col: str = "tradeDate",
-        prompt_len: int = 5,
-        max_len: int = 2048,
+        date_col: str,
+        prompt_len: int = 32,
+        completion_len: int = 32,
     ):
         cols = list(set(input_cols + reward_cols))
-        self.df = df[[date_col] + cols].sort_values(
-            by=date_col, ignore_index=True).bfill().ffill()
+        df = df[[date_col] + cols]
+        df.loc[:, date_col] = pd.to_datetime(df[date_col])
+        self.df = df.sort_values(by=date_col,
+                                 ignore_index=True).bfill().ffill()
         self.input_cols = input_cols
         self.reward_cols = reward_cols
         self.date_col = date_col
         self.prompt_len = prompt_len
-        self.max_len = max_len
+        self.max_len = prompt_len + completion_len
 
     def __call__(self, start_time: str):
 
@@ -80,7 +82,7 @@ class PriceProcessor:
 
     def rolling(self, **kwargs):
 
-        windows = list(self.df.rolling(**kwargs))
+        windows = list(self.df.rolling(window=self.max_len, **kwargs))
         windows = list(filter(lambda x: len(x) >= self.prompt_len, windows))
 
         results = [self(win.iloc[0][self.date_col]) for win in windows]

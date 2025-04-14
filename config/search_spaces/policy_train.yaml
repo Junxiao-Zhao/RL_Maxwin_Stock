@@ -1,0 +1,2 @@
+model.prompt_len: choice(5, 20, 60)
+model.completion_len: choice(20, 100, 250)

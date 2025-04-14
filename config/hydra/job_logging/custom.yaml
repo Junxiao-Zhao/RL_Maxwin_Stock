@@ -1,0 +1,24 @@
+version: 1
+formatters:
+  simpleFormatter:
+    format: "[%(levelname)s - %(asctime)s - %(filename)s - line(%(lineno)d)] > %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+handlers:
+  consoleHandler:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: simpleFormatter
+    stream: ext://sys.stdout
+  fileHandler:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: simpleFormatter
+    filename: "main.log"
+    mode: "a"
+    maxBytes: 10000
+    backupCount: 0
+    encoding: "UTF-8"
+root:
+  handlers: [consoleHandler, fileHandler]
+  level: INFO
+disable_existing_loggers: false

@@ -1,0 +1,76 @@
+model_name: 'Qwen/Qwen2.5-0.5B'
+device: 'cuda'
+seed: 42
+
+load_pretrained: False
+batch_size: 64
+prompt_len: 32
+completion_len: 32
+learning_rate: 1e-6
+csv_path: './data/overall_20090105-20250411.csv'
+dataset_path: './data/p1_${model.prompt_len}_${model.completion_len}.parquet'
+
+trial_name: "test"
+
+llm:
+  from_pretrained:
+    pretrained_model_name_or_path: ${model.model_name}
+    device_map: ${model.device}
+
+llm_config:
+  from_pretrained:
+    pretrained_model_name_or_path: ${model.model_name}
+    device_map: ${model.device}
+
+config:
+  vocab_size: 2
+  num_hidden_layers: 4
+
+dataset:
+  load_from_disk:
+    dataset_path: ${model.dataset_path}
+  train_test_split:
+    test_size: 0.1
+    seed: ${model.seed}
+  
+PriceProcessor:
+  init:
+    date_col: 'date'
+    input_cols: ["EPValue", "10年"]
+    reward_cols: ["open", "close"]
+    prompt_len: ${model.prompt_len}
+    completion_len: ${model.completion_len}
+  rolling:
+    step: 13
+  
+GRPOConfig:
+  output_dir: './checkpoints'
+  learning_rate: ${model.learning_rate}
+  per_device_train_batch_size: ${model.batch_size}
+  per_device_eval_batch_size: ${model.batch_size}
+  num_generations: 64
+  max_prompt_length: ${model.prompt_len}
+  max_completion_length: ${model.completion_len}
+  temperature: 1
+  beta: 0.0
+  use_vllm: False
+  num_train_epochs: 30
+  logging_strategy: "steps"
+  logging_steps: 1
+  eval_strategy: "steps"
+  eval_steps: 10
+  save_strategy: "steps"
+  save_steps: 100
+  save_total_limit: 1
+  metric_for_best_model: "eval_reward"
+  greater_is_better: True
+  load_best_model_at_end: True
+  weight_decay: 0.01
+  optim: "adamw_torch"
+  report_to: ["tensorboard"]
+
+EarlyStoppingCallback:
+  early_stopping_patience: 100
+
+train:
+  resume_from_checkpoint: False

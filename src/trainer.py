@@ -1,5 +1,7 @@
 from typing import Any, Union
+from collections import defaultdict
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,6 +12,26 @@ from trl.extras.profiling import profiling_context
 
 
 class ActionGRPOTrainer(GRPOTrainer):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reward_metrics = {
+            "train": defaultdict(list),
+            "eval": defaultdict(list)
+        }
+
+    def _evaluate(self, trial, ignore_keys_for_eval, skip_scheduler=False):
+        metrics = super()._evaluate(trial, ignore_keys_for_eval,
+                                    skip_scheduler)
+        trl_metrics = {
+            f"eval_{k}": np.mean(v)
+            for k, v in self.reward_metrics["eval"].items()
+        }
+        metrics.update(trl_metrics)
+        self.reward_metrics["train"].clear()
+        self.reward_metrics["eval"].clear()
+
+        return metrics
 
     def _get_per_token_logps(self,
                              model,
@@ -193,6 +215,7 @@ class ActionGRPOTrainer(GRPOTrainer):
         self._metrics[mode]["reward"].append(rewards.mean().item())
         self._metrics[mode]["reward_std"].append(
             std_grouped_rewards.mean().item())
+        self.reward_metrics[mode]["reward"].append(rewards.mean().item())
 
         return {
             "prompt_ids": prompt_ids,
