@@ -15,13 +15,9 @@ class Qwen2ForAction(Qwen2PreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-        self.embed = nn.Linear(config.vocab_size,
-                               config.hidden_size,
-                               bias=True)
+        self.embed = nn.Linear(config.vocab_size, config.hidden_size, bias=False)
         self.model = Qwen2Model(config)
-        self.lm_head = nn.Linear(config.hidden_size,
-                                 config.vocab_size,
-                                 bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.post_init()
 
     def forward(
@@ -40,8 +36,7 @@ class Qwen2ForAction(Qwen2PreTrainedModel):
     ):
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (output_hidden_states
-                                if output_hidden_states is not None else
-                                self.config.output_hidden_states)
+                                if output_hidden_states is not None else self.config.output_hidden_states)
 
         inputs_embeds = self.embed(input_ids)
         input_ids = None
@@ -61,8 +56,7 @@ class Qwen2ForAction(Qwen2PreTrainedModel):
 
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        slice_indices = slice(-logits_to_keep, None) if isinstance(
-            logits_to_keep, int) else logits_to_keep
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
 
         loss = None

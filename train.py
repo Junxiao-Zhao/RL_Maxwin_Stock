@@ -1,10 +1,12 @@
 import os
 import logging
+from datetime import datetime
 
 import hydra
 import pandas as pd
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
+from datasets import concatenate_datasets, DatasetDict
 from transformers import (
     AutoConfig,
     EarlyStoppingCallback,
@@ -39,27 +41,35 @@ def train(cfg: DictConfig) -> float:
     config = AutoConfig.from_pretrained(**cfg['llm_config']['from_pretrained'])
     config.update(cfg['config'])
     if cfg['load_pretrained']:
-        model = Qwen2ForAction.from_pretrained(**cfg['llm']['from_pretrained'],
-                                               config=config)
+        model = Qwen2ForAction.from_pretrained(**cfg['llm']['from_pretrained'], config=config)
     else:
         model = Qwen2ForAction(config)
     model = model.to(cfg["device"])
 
     # Prepare data
     overall_df = pd.read_csv(cfg["csv_path"])
-    processor = PriceProcessor(overall_df, **cfg["PriceProcessor"]["init"])
-    dataset = processor.rolling(**cfg["PriceProcessor"]["rolling"])
-    dataset = dataset.rename_columns({
-        "open": "open_price",
-        "close": "close_price"
-    })
+    train_df, eval_df = overall_df.iloc[:-500], overall_df.iloc[-500:]
+    processor = PriceProcessor(**cfg["PriceProcessor"]["init"])
 
-    ds_tr_eval = dataset.train_test_split(**cfg['dataset']['train_test_split'])
-    logger.debug(ds_tr_eval)
+    max_len = cfg["prompt_len"] + cfg["completion_len"]
+    dataset = DatasetDict()
+
+    for split, df in zip(["train", "test"], [train_df, eval_df]):
+        dataset_ls = []
+        for step in cfg["PriceProcessor"]["rolling"]["steps"]:
+            for window in cfg["PriceProcessor"]["rolling"]["windows"]:
+                if window > max_len:
+                    continue
+                dataset_ls.append(processor.rolling(df, window=window, step=step))
+        dataset[split] = concatenate_datasets(dataset_ls)
+    ds_tr_eval = dataset.rename_columns({"open": "open_price", "close": "close_price"})
+
+    # ds_tr_eval = dataset.train_test_split(**cfg['dataset']['train_test_split'])
+    logger.info(ds_tr_eval)
 
     # Prepare Trainer
-    trial_num = hydra_cfg.job.get("id", cfg["trial_name"])
-    cfg['GRPOConfig']['output_dir'] += f"/trial-{trial_num}"
+    # trial_num = hydra_cfg.job.get("id", cfg["trial_name"])
+    cfg['GRPOConfig']['output_dir'] += "/" + datetime.now().strftime("%Y%m%d_%H%M%S")
     training_args = GRPOConfig(**cfg['GRPOConfig'])
 
     trainer = ActionGRPOTrainer(

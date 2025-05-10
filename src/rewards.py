@@ -34,14 +34,12 @@ def compute_yield_policy1(
         for span in list(zip(start.tolist(), end.tolist())):
             start_idx, end_idx = span
 
-            bid_rate = (open_price[i][start_idx] + slippage) * (1 +
-                                                                service_fee)
+            bid_rate = (open_price[i][start_idx] + slippage) * (1 + service_fee)
             shares = total_assets // bid_rate
             total_assets = total_assets % bid_rate
 
             if end_idx < seq_len and completion_mask[i, end_idx] == 1:
-                ask_rate = (open_price[i][end_idx] -
-                            slippage) * (1 - service_fee - stamps)
+                ask_rate = (open_price[i][end_idx] - slippage) * (1 - service_fee - stamps)
             else:
                 ask_rate = close_price[i][end_idx - 1]
 

@@ -4,9 +4,9 @@ seed: 42
 
 load_pretrained: False
 batch_size: 64
-prompt_len: 32
-completion_len: 32
-learning_rate: 1e-6
+prompt_len: 20
+completion_len: 250
+learning_rate: 1e-7
 csv_path: './data/overall_20090105-20250411.csv'
 dataset_path: './data/p1_${model.prompt_len}_${model.completion_len}.parquet'
 
@@ -41,7 +41,8 @@ PriceProcessor:
     prompt_len: ${model.prompt_len}
     completion_len: ${model.completion_len}
   rolling:
-    step: 13
+    windows: [64, 128, 256, 512]
+    steps: [11, 13, 17, 23]
   
 GRPOConfig:
   output_dir: './checkpoints'
@@ -54,7 +55,9 @@ GRPOConfig:
   temperature: 1
   beta: 0.0
   use_vllm: False
-  num_train_epochs: 30
+  scale_rewards: False
+  gradient_accumulation_steps: 4
+  num_train_epochs: 3
   logging_strategy: "steps"
   logging_steps: 1
   eval_strategy: "steps"
