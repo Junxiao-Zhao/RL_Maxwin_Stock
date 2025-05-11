@@ -3,46 +3,23 @@ device: 'cuda'
 seed: 42
 
 load_pretrained: False
-batch_size: 64
-prompt_len: 20
-completion_len: 250
+batch_size: 256
 learning_rate: 1e-7
-csv_path: './data/overall_20090105-20250411.csv'
-dataset_path: './data/p1_${model.prompt_len}_${model.completion_len}.parquet'
+dataset_folder: './data'
 
 trial_name: "test"
 
-llm:
-  from_pretrained:
-    pretrained_model_name_or_path: ${model.model_name}
-    device_map: ${model.device}
-
-llm_config:
-  from_pretrained:
-    pretrained_model_name_or_path: ${model.model_name}
-    device_map: ${model.device}
-
-config:
-  vocab_size: 2
-  num_hidden_layers: 4
+PatchTSTConfig:
+  num_input_channels: 2
+  context_length: 32
+  patch_length: 8
+  patch_stride: 8
+  head_dropout: 0.2
+  num_targets: 2
 
 dataset:
-  load_from_disk:
-    dataset_path: ${model.dataset_path}
-  train_test_split:
-    test_size: 0.1
-    seed: ${model.seed}
-  
-PriceProcessor:
-  init:
-    date_col: 'date'
-    input_cols: ["EPValue", "10年"]
-    reward_cols: ["open", "close"]
-    prompt_len: ${model.prompt_len}
-    completion_len: ${model.completion_len}
-  rolling:
-    windows: [64, 128, 256, 512]
-    steps: [11, 13, 17, 23]
+  train_fp: "${model.dataset_folder}/train.parquet"
+  eval_fp: "${model.dataset_folder}/eval.parquet"
   
 GRPOConfig:
   output_dir: './checkpoints'
@@ -50,13 +27,11 @@ GRPOConfig:
   per_device_train_batch_size: ${model.batch_size}
   per_device_eval_batch_size: ${model.batch_size}
   num_generations: 64
-  max_prompt_length: ${model.prompt_len}
-  max_completion_length: ${model.completion_len}
   temperature: 1
   beta: 0.0
   use_vllm: False
   scale_rewards: False
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 8
   num_train_epochs: 3
   logging_strategy: "steps"
   logging_steps: 1
@@ -70,7 +45,7 @@ GRPOConfig:
   load_best_model_at_end: True
   weight_decay: 0.01
   optim: "adamw_torch"
-  report_to: ["tensorboard"]
+  report_to: "tensorboard"
 
 EarlyStoppingCallback:
   early_stopping_patience: 100

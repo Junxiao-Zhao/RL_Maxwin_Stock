@@ -7,8 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 from accelerate.utils.operations import gather
-from trl import GRPOTrainer
-from trl.extras.profiling import profiling_context
+from trl.trl import GRPOTrainer
+from trl.trl.extras.profiling import profiling_context
 
 
 class ActionGRPOTrainer(GRPOTrainer):
@@ -26,11 +26,9 @@ class ActionGRPOTrainer(GRPOTrainer):
 
         return metrics
 
-    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, return_actions=False):
-        logits = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
-        logits = logits[:, :-1, :]
-        logits = logits[:, -logits_to_keep:]
+    def _get_per_token_logps(self, logits, return_actions=False):
         logits = logits / self.temperature
+        logits_to_keep = logits.shape[1]
 
         logits = F.softmax(logits, dim=-1)
         dist = Categorical(logits)
@@ -46,49 +44,53 @@ class ActionGRPOTrainer(GRPOTrainer):
 
         return log_probs
 
+    def _patchtst_generation(self, model: nn.Module, unfold_prompt_ids: torch.Tensor, unfold_prompt_mask: torch.Tensor):
+
+        batch_size, num_actions = unfold_prompt_ids.shape[:2]
+        unfold_prompt_ids = unfold_prompt_ids.flatten(end_dim=1)
+        unfold_prompt_mask = unfold_prompt_mask.flatten(end_dim=1)
+
+        output = model(past_values=unfold_prompt_ids, past_observed_mask=unfold_prompt_mask)
+        completion_ids = output.prediction_logits.reshape(batch_size, num_actions, -1)  # (B, S, 2)
+        completion_mask = torch.ones(completion_ids.shape[:-1], dtype=torch.bool, device=completion_ids.device)
+
+        return completion_ids, completion_mask
+
     def _generate_and_score_completions(
             self, inputs: dict[str, Union[torch.Tensor, Any]]) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
 
         prompt_ids = torch.tensor([x["prompt_ids"] for x in inputs[::self.num_generations]], dtype=torch.float32)
         prompt_mask = torch.tensor([x["prompt_mask"] for x in inputs[::self.num_generations]], dtype=torch.float32)
-        completion_ids = torch.tensor([x["completion_ids"] for x in inputs[::self.num_generations]],
-                                      dtype=torch.float32)
-        completion_mask = torch.tensor([x["completion_mask"] for x in inputs[::self.num_generations]],
-                                       dtype=torch.float32)
-        prompt_ids = super(GRPOTrainer, self)._prepare_inputs(prompt_ids)
+        prompt_ids = super(GRPOTrainer, self)._prepare_inputs(prompt_ids)  # (B, C, K)
         prompt_mask = super(GRPOTrainer, self)._prepare_inputs(prompt_mask)
-        completion_ids = super(GRPOTrainer, self)._prepare_inputs(completion_ids)
-        completion_mask = super(GRPOTrainer, self)._prepare_inputs(completion_mask)
 
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length:]
             prompt_mask = prompt_mask[:, -self.max_prompt_length:]
 
-        prompt_completion_ids = torch.concat([prompt_ids, completion_ids], dim=1)
-        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-        logits_to_keep = completion_ids.size(1)
+        unfold_prompt_ids = prompt_ids.unfold(1, 32, 1).permute(0, 1, 3, 2)  # (B, S, 32, K)
+        unfold_prompt_mask = prompt_mask.unfold(1, 32, 1).permute(0, 1, 3, 2)
+
+        completion_ids, completion_mask = self._patchtst_generation(self.model, unfold_prompt_ids, unfold_prompt_mask)
+        attention_mask = torch.cat([prompt_mask[:, :, 0], completion_mask], dim=1)
+        completion_mask = completion_mask.repeat_interleave(self.num_generations, dim=0)
 
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's
             # computation here, and use per_token_logps.detach() instead.
-            old_per_token_logps, actions = self._get_per_token_logps(self.model,
-                                                                     prompt_completion_ids,
-                                                                     attention_mask,
-                                                                     logits_to_keep,
-                                                                     return_actions=True)
+            old_per_token_logps, actions = self._get_per_token_logps(completion_ids, return_actions=True)
             if self.num_iterations <= 1:
                 old_per_token_logps = None
 
             if self.beta == 0.0:
                 ref_per_token_logps = None
             elif self.ref_model is not None:
-                ref_per_token_logps = self._get_per_token_logps(self.ref_model, prompt_completion_ids, attention_mask,
-                                                                logits_to_keep)
+                ref_completion_ids, _ = self._patchtst_generation(self.ref_model, unfold_prompt_ids, unfold_prompt_mask)
+                ref_per_token_logps = self._get_per_token_logps(ref_completion_ids)
             else:
                 with self.accelerator.unwrap_model(self.model).disable_adapter():
-                    ref_per_token_logps = self._get_per_token_logps(self.model, prompt_completion_ids, attention_mask,
-                                                                    logits_to_keep)
+                    ref_per_token_logps = self._get_per_token_logps(completion_ids)
 
         rewards_per_func = torch.zeros(len(actions), len(self.reward_funcs), device=device)  # (B * N, 1)
         for i, (reward_func,
@@ -100,12 +102,12 @@ class ActionGRPOTrainer(GRPOTrainer):
             with profiling_context(self, reward_func_name):
                 if isinstance(reward_func,
                               nn.Module):  # Module instead of PretrainedModel for compat with compiled models
-                    raise NotImplementedError()
+                    raise NotImplemented
                 else:
                     # Repeat all input columns (but "prompt" and "completion") to match the number of generations
                     keys = [key for key in inputs[0] if not key.startswith("prompt")]
                     reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
-                    output_reward_func = reward_func(actions=actions, **reward_kwargs)
+                    output_reward_func = reward_func(actions=actions, completion_mask=completion_mask, **reward_kwargs)
                     # Convert None values to NaN
                     output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
 
@@ -168,3 +170,49 @@ class ActionGRPOTrainer(GRPOTrainer):
             "ref_per_token_logps": ref_per_token_logps,
             "advantages": advantages,
         }
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if return_outputs:
+            raise ValueError("The GRPOTrainer does not support returning outputs")
+        # Compute the per-token log probabilities for the model
+
+        prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
+
+        unfold_prompt_ids = prompt_ids.unfold(1, 32, 1).permute(0, 1, 3, 2)  # (B, S, 32, K)
+        unfold_prompt_mask = prompt_mask.unfold(1, 32, 1).permute(0, 1, 3, 2)
+
+        completion_ids, completion_mask = self._patchtst_generation(self.model, unfold_prompt_ids, unfold_prompt_mask)
+        per_token_logps = self._get_per_token_logps(completion_ids)
+        completion_mask = completion_mask.repeat_interleave(self.num_generations, dim=0)
+
+        # Compute the KL divergence between the model and the reference model
+        if self.beta != 0.0:
+            ref_per_token_logps = inputs["ref_per_token_logps"]
+            per_token_kl = (torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) -
+                            1)
+
+        # Compute the loss
+        advantages = inputs["advantages"]
+        # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's computation (see
+        # _generate_and_score_completions) and use per_token_logps.detach() instead.
+        old_per_token_logps = inputs["old_per_token_logps"] if self.num_iterations > 1 else per_token_logps.detach()
+        coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
+        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+        if self.beta != 0.0:
+            per_token_loss = per_token_loss + self.beta * per_token_kl
+        loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
+
+        # Log the metrics
+        mode = "eval" if self.control.should_evaluate else "train"
+
+        if self.beta != 0.0:
+            mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
+            self._metrics[mode]["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
+
+        is_clipped = (per_token_loss1 < per_token_loss2).float()
+        clip_ratio = (is_clipped * completion_mask).sum() / completion_mask.sum()
+        self._metrics[mode]["clip_ratio"].append(self.accelerator.gather_for_metrics(clip_ratio).mean().item())
+        return loss
